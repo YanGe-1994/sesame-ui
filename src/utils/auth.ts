@@ -13,8 +13,9 @@ export default {
       !credential.expire_at ||
       credential.expire_at < now
     ) {
-      // 3.账号未登录，直接移除LocalStorage中的数据，涵盖用户数据+授权凭证
-      storage.clear()
+      // 3.账号未登录，只清理登录态，保留设备标识
+      storage.remove('credential')
+      storage.remove('account')
       return false
     }
     // 4.满足所有条件，返回true

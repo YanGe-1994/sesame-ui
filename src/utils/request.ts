@@ -1,12 +1,11 @@
 import { Message } from '@arco-design/web-vue'
 import { apiPrefix, httpCode } from '@/config'
 import { useCredentialStore } from '@/stores/credential'
+import { useAccountStore } from '@/stores/account'
 import router from '@/router'
 
-// 1.超时时间为100s
 const TIME_OUT = 100000
 
-// 2.基础的配置
 const baseFetchOptions = {
   method: 'GET',
   mode: 'cors',
@@ -17,104 +16,131 @@ const baseFetchOptions = {
   redirect: 'follow',
 }
 
-// 3.fetch参数类型
 type FetchOptionType = Omit<RequestInit, 'body'> & {
   params?: Record<string, any>
   body?: BodyInit | Record<string, any> | null
+  skipRefresh?: boolean
 }
 
-// 4.封装基础的fetch请求
-const baseFetch = <T>(url: string, fetchOptions: FetchOptionType): Promise<T> => {
-  // 5.将所有的配置信息合并起来
+let refreshPromise: Promise<boolean> | null = null
+
+const buildHeaders = (headers?: HeadersInit) => new Headers(headers || baseFetchOptions.headers)
+
+const attachAuthHeaders = (headers: Headers) => {
+  const credentialStore = useCredentialStore()
+  const accessToken = credentialStore.credential.access_token
+  if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
+  headers.set('X-Device-Id', credentialStore.ensureDeviceId())
+}
+
+const clearLoginState = async () => {
+  useCredentialStore().clear()
+  useAccountStore().clear()
+  await router.replace({ path: '/auth/login' })
+}
+
+const refreshAccessToken = async () => {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const credentialStore = useCredentialStore()
+      const headers = new Headers({ 'Content-Type': 'application/json' })
+      headers.set('X-Device-Id', credentialStore.ensureDeviceId())
+      const response = await globalThis.fetch(`${apiPrefix}/auth/refresh`, {
+        method: 'POST',
+        mode: 'cors',
+        credentials: 'include',
+        headers,
+      } as RequestInit)
+      const json = await response.json()
+      if (json.code === httpCode.success) {
+        credentialStore.update(json.data)
+        return true
+      }
+      return false
+    })().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
+}
+
+const normalizeOptions = (fetchOptions: FetchOptionType) => {
   const options: typeof baseFetchOptions & FetchOptionType = Object.assign(
     {},
     baseFetchOptions,
     fetchOptions,
   )
-  const { credential, clear: clearCredential } = useCredentialStore()
-  const access_token = credential.access_token
-  if (access_token) options.headers.set('Authorization', `Bearer ${access_token}`)
-
-  // 6.组装url
-  let urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
-
-  // 7.解构出对应的请求方法、params、body参数
-  const { method, params, body } = options
-
-  // 8.如果请求是GET方法，并且传递了params参数
-  if (method === 'GET' && params) {
-    const paramsArray: string[] = []
-    Object.keys(params).forEach((key) => {
-      paramsArray.push(`${key}=${encodeURIComponent(params[key])}`)
-    })
-    if (urlWithPrefix.search(/\?/) === -1) {
-      urlWithPrefix += `?${paramsArray.join('&')}`
-    } else {
-      urlWithPrefix += `&${paramsArray.join('&')}`
-    }
-
-    delete options.params
-  }
-
-  // 9.处理post传递的数据
-  if (body) {
-    options.body = JSON.stringify(body)
-  }
-
-  // 10.同时发起两个Promise(或者是说两个操作，看谁先返回，就先结束)
-  return Promise.race([
-    // 11.使用定时器来检测是否超时
-    new Promise((resolve, reject) => {
-      setTimeout(() => {
-        reject('接口已超时')
-      }, TIME_OUT)
-    }),
-    // 12.发起一个正常请求
-    new Promise((resolve, reject) => {
-      globalThis
-        .fetch(urlWithPrefix, options as RequestInit)
-        .then(async (res) => {
-          const json = await res.json()
-          if (json.code === httpCode.success) {
-            resolve(json)
-          } else if (json.code === httpCode.unauthorized) {
-            clearCredential()
-            await router.replace({ path: '/auth/login' })
-          } else {
-            Message.error(json.message)
-            reject(new Error(json.message))
-          }
-        })
-        .catch((err) => {
-          Message.error(err.message)
-          reject(err)
-        })
-    }),
-  ]) as Promise<T>
+  options.headers = buildHeaders(fetchOptions.headers)
+  attachAuthHeaders(options.headers)
+  return options
 }
 
-// 5.封装基于post的sse(流式事件响应)请求
+const baseFetch = <T>(url: string, fetchOptions: FetchOptionType): Promise<T> => {
+  const execute = async (allowRefresh: boolean): Promise<T> => {
+    const options = normalizeOptions(fetchOptions)
+    let urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
+    const { method, params, body } = options
+
+    if (method === 'GET' && params) {
+      const paramsArray: string[] = []
+      Object.keys(params).forEach((key) => {
+        paramsArray.push(`${key}=${encodeURIComponent(params[key])}`)
+      })
+      if (urlWithPrefix.search(/\?/) === -1) {
+        urlWithPrefix += `?${paramsArray.join('&')}`
+      } else {
+        urlWithPrefix += `&${paramsArray.join('&')}`
+      }
+      delete options.params
+    }
+
+    if (body) options.body = typeof body === 'string' ? body : JSON.stringify(body)
+
+    const json = await Promise.race([
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('接口已超时')), TIME_OUT)
+      }),
+      globalThis.fetch(urlWithPrefix, options as RequestInit).then((res) => res.json()),
+    ]) as any
+
+    if (json.code === httpCode.success) return json
+    if (json.code === httpCode.unauthorized) {
+      if (allowRefresh && !fetchOptions.skipRefresh && await refreshAccessToken()) {
+        return execute(false)
+      }
+      await clearLoginState()
+      throw new Error(json.message)
+    }
+    Message.error(json.message)
+    throw new Error(json.message)
+  }
+
+  return execute(true)
+}
+
 export const ssePost = async (
   url: string,
   fetchOptions: FetchOptionType,
   onData: (data: { [key: string]: any }) => void,
 ) => {
-  // 5.1 组装基础的fetch请求配置
-  const options = Object.assign({}, baseFetchOptions, { method: 'POST' }, fetchOptions)
-  const { credential } = useCredentialStore()
-  const access_token = credential.access_token
-  if (access_token) options.headers.set('Authorization', `Bearer ${access_token}`)
+  const execute = async (allowRefresh: boolean): Promise<void> => {
+    const options = normalizeOptions(Object.assign({}, fetchOptions, { method: 'POST' }))
+    const urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
+    const { body } = fetchOptions
+    if (body) options.body = typeof body === 'string' ? body : JSON.stringify(body)
 
-  // 5.2 组装请求URL
-  const urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
+    const response = await globalThis.fetch(urlWithPrefix, options as RequestInit)
+    if (!response.ok) {
+      if (allowRefresh && response.status === 401 && await refreshAccessToken()) {
+        return execute(false)
+      }
+      await clearLoginState()
+      throw new Error('网络请求失败')
+    }
+    return await handleStream(response, onData)
+  }
 
-  // 5.3 结构body参数，并处理body对应的数据
-  const { body } = fetchOptions
-  if (body) options.body = JSON.stringify(body)
-
-  // 5.4 发起fetch请求并处理流式事件响应
-  const response = await globalThis.fetch(urlWithPrefix, options as RequestInit)
-  return await handleStream(response, onData)
+  return execute(true)
 }
 
 const handleStream = (
@@ -122,18 +148,10 @@ const handleStream = (
   onData: (data: Record<string, any>) => void,
 ): Promise<void> => {
   return new Promise((resolve, reject) => {
-    // 1.检测网络请求是否正常
-    if (!response.ok) {
-      reject(new Error('网络请求失败'))
-      return
-    }
-
-    // 2.构建reader以及deocder
     const reader = response.body?.getReader()
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
 
-    // 3.构建read函数用于去读取数据
     const read = () => {
       reader?.read().then((result: any) => {
         if (result.done) {
@@ -156,7 +174,6 @@ const handleStream = (
               data = line.slice(5).trim()
             }
 
-            // 每个事件以空行结束，只有event和data同时存在，才表示一次流式事件的数据完整获取到了
             if (line === '') {
               if (event !== '' && data !== '') {
                 onData({
@@ -177,74 +194,66 @@ const handleStream = (
       })
     }
 
-    // 4.调用read函数去执行获取对应的数据
     read()
   })
 }
 
 export const upload = <T>(url: string, options: any = {}): Promise<T> => {
-  // 1 组装请求URL
-  const urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
-
-  // 2.组装xhr请求配置信息
-  const defaultOptions = {
-    method: 'POST',
-    url: urlWithPrefix,
-    headers: {},
-    data: {},
-  }
-  options = {
-    ...defaultOptions,
-    ...options,
-    headers: { ...defaultOptions.headers, ...options.headers },
-  }
-  const { credential, clear: clearCredential } = useCredentialStore()
-  const access_token = credential.access_token
-  if (access_token) options.headers['Authorization'] = `Bearer ${access_token}`
-
-  // 3.构建promise并使用xhr完成文件上传
-  return new Promise((resolve, reject) => {
-    // 4.创建xhr服务
-    const xhr = new XMLHttpRequest()
-
-    // 5.初始化xhr请求并配置headers
-    xhr.open(options.method, options.url)
-    for (const key in options.headers) {
-      xhr.setRequestHeader(key, options.headers[key])
+  const execute = async (allowRefresh: boolean): Promise<T> => {
+    const urlWithPrefix = `${apiPrefix}${url.startsWith('/') ? url : `/${url}`}`
+    const defaultOptions = {
+      method: 'POST',
+      url: urlWithPrefix,
+      headers: {},
+      data: {},
     }
+    const xhrOptions = {
+      ...defaultOptions,
+      ...options,
+      headers: { ...defaultOptions.headers, ...options.headers },
+    }
+    const credentialStore = useCredentialStore()
+    const accessToken = credentialStore.credential.access_token
+    if (accessToken) xhrOptions.headers['Authorization'] = `Bearer ${accessToken}`
+    xhrOptions.headers['X-Device-Id'] = credentialStore.ensureDeviceId()
 
-    // 6.设置xhr响应格式并携带授权凭证（例如cookie）
-    xhr.withCredentials = true
-    xhr.responseType = 'json'
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open(xhrOptions.method, xhrOptions.url)
+      for (const key in xhrOptions.headers) {
+        xhr.setRequestHeader(key, xhrOptions.headers[key])
+      }
+      xhr.withCredentials = true
+      xhr.responseType = 'json'
 
-    // 7.监听xhr状态变化并导出数据
-    xhr.onreadystatechange = async () => {
-      // 8.判断xhr的状态是不是为4，如果为4则代表已经传输完成（涵盖成功与失败）
-      if (xhr.readyState === 4) {
-        // 9.检查响应状态码，当HTTP状态码为200的时候表示请求成功
-        if (xhr.status === 200) {
-          // 10.判断业务状态码是否正常
-          const response = xhr.response
-          if (response.code === httpCode.success) {
-            resolve(response)
-          } else if (response.code === httpCode.unauthorized) {
-            clearCredential()
-            await router.replace({ path: '/auth/login' })
+      xhr.onreadystatechange = async () => {
+        if (xhr.readyState === 4) {
+          if (xhr.status === 200) {
+            const response = xhr.response
+            if (response.code === httpCode.success) {
+              resolve(response)
+            } else if (response.code === httpCode.unauthorized) {
+              if (allowRefresh && await refreshAccessToken()) {
+                resolve(await execute(false))
+                return
+              }
+              await clearLoginState()
+              reject(new Error(response.message))
+            } else {
+              reject(xhr.response)
+            }
           } else {
-            reject(xhr.response)
+            reject(xhr)
           }
-        } else {
-          reject(xhr)
         }
       }
-    }
 
-    // 10.添加xhr进度监听
-    xhr.upload.onprogress = options.onprogress
+      xhr.upload.onprogress = xhrOptions.onprogress
+      xhr.send(xhrOptions.data)
+    })
+  }
 
-    // 11.发送请求
-    xhr.send(options.data)
-  })
+  return execute(true)
 }
 
 export const request = <T>(url: string, options = {}) => {
