@@ -35,7 +35,7 @@ const { handleUpdateDraftAppConfig } = useUpdateDraftAppConfig()
           "
         >
           <a-button size="mini" class="rounded-lg flex items-center gap-1 px-1" @click.stop>
-            {{ props.suggested_after_answer.enable ? '开启' : '关闭' }}
+            {{ props.suggested_after_answer?.enable ? '开启' : '关闭' }}
             <icon-down />
           </a-button>
           <template #content>

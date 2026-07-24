@@ -1,10 +1,12 @@
 import { onMounted, reactive, ref } from 'vue'
 import {
   cancelPublish,
+  createApp,
   debugChat,
   deleteDebugConversation,
   fallbackHistoryToDraft,
   getApp,
+  getAppsWithPage,
   getDebugConversationMessagesWithPage,
   getDebugConversationSummary,
   getDraftAppConfig,
@@ -15,10 +17,77 @@ import {
   updateDraftAppConfig,
 } from '@/services/app'
 import { Message, Modal } from '@arco-design/web-vue'
+import router from '@/router'
 import type {
+  CreateAppRequest,
   GetDebugConversationMessagesWithPageResponse,
   UpdateDraftAppConfigRequest,
 } from '@/models/app'
+
+export const useGetAppsWithPage = () => {
+  const loading = ref(false)
+  const apps = reactive<Array<Record<string, any>>>([])
+  const defaultPaginator = {
+    current_page: 1,
+    page_size: 20,
+    total_page: 0,
+    total_record: 0,
+  }
+  const paginator = reactive({ ...defaultPaginator })
+
+  const loadApps = async (init: boolean = false) => {
+    try {
+      if (init) {
+        Object.assign(paginator, { ...defaultPaginator })
+      } else if (paginator.current_page > paginator.total_page) {
+        return
+      }
+
+      loading.value = true
+      const resp = await getAppsWithPage({
+        current_page: paginator.current_page,
+        page_size: paginator.page_size,
+      })
+      const data = resp.data
+      paginator.current_page = data.paginator.current_page
+      paginator.page_size = data.paginator.page_size
+      paginator.total_page = data.paginator.total_page
+      paginator.total_record = data.paginator.total_record
+
+      if (paginator.current_page <= paginator.total_page) {
+        paginator.current_page += 1
+      }
+      if (init) {
+        apps.splice(0, apps.length, ...data.list)
+      } else {
+        apps.push(...data.list)
+      }
+    } finally {
+      loading.value = false
+    }
+  }
+
+  onMounted(async () => await loadApps(true))
+
+  return { loading, apps, paginator, loadApps }
+}
+
+export const useCreateApp = () => {
+  const loading = ref(false)
+
+  const handleCreateApp = async (req: CreateAppRequest) => {
+    try {
+      loading.value = true
+      const resp = await createApp(req)
+      Message.success('应用创建成功')
+      await router.push({ name: 'space-apps-detail', params: { app_id: resp.data.id } })
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return { loading, handleCreateApp }
+}
 
 export const useGetApp = (app_id: string) => {
   // 1.定义hooks所需的基础数据
@@ -185,15 +254,22 @@ export const useGetDraftAppConfig = (app_id: string) => {
 
       // 2.2 将数据同步到表单中
       Object.assign(draftAppConfigForm, {
-        preset_prompt: data.preset_prompt,
-        long_term_memory: data.long_term_memory,
-        opening_statement: data.opening_statement,
-        opening_questions: data.opening_questions,
-        suggested_after_answer: data.suggested_after_answer,
-        review_config: data.review_config,
-        datasets: data.datasets,
-        retrieval_config: data.retrieval_config,
-        tools: data.tools,
+        model_config: data.model_config ?? { provider: 'dashscope', model: 'glm-5.2', parameters: { temperature: 0.7 } },
+        dialog_round: data.dialog_round ?? 3,
+        preset_prompt: data.preset_prompt ?? '',
+        long_term_memory: data.long_term_memory ?? { enable: true },
+        opening_statement: data.opening_statement ?? '',
+        opening_questions: data.opening_questions ?? [],
+        suggested_after_answer: data.suggested_after_answer ?? { enable: true },
+        review_config: data.review_config ?? {
+          enable: false,
+          keywords: [],
+          inputs_config: { enable: false, preset_response: '' },
+          outputs_config: { enable: false },
+        },
+        datasets: data.datasets ?? [],
+        retrieval_config: data.retrieval_config ?? { retrieval_strategy: 'semantic', k: 4, score: 0.5 },
+        tools: data.tools ?? [],
       })
     } finally {
       loading.value = false
@@ -311,7 +387,7 @@ export const useGetDebugConversationMessagesWithPage = () => {
     try {
       loading.value = true
       const resp = await getDebugConversationMessagesWithPage(app_id, {
-        current_page: paginator.value.current_page,
+        current_page: created_at.value ? 1 : paginator.value.current_page,
         page_size: paginator.value.page_size,
         created_at: created_at.value,
       })
@@ -330,8 +406,8 @@ export const useGetDebugConversationMessagesWithPage = () => {
         messages.value = data.list
       } else {
         messages.value.push(...data.list)
-        created_at.value = data.list[0]?.created_at ?? 0
       }
+      created_at.value = messages.value[messages.value.length - 1]?.created_at ?? 0
     } finally {
       loading.value = false
     }

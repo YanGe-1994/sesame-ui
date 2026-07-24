@@ -20,6 +20,9 @@ export type GetAppResponse = BaseResponse<{
 // 新增应用请求结构
 export type CreateAppRequest = { name: string; icon: string; description: string }
 
+// 获取应用分页列表响应结构
+export type GetAppsWithPageResponse = BasePaginatorResponse<GetAppResponse['data']>
+
 // 获取特定应用的草稿配置响应结构
 export type GetDraftAppConfigResponse = BaseResponse<{
   id: string

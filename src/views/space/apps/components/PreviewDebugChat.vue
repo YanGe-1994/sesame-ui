@@ -2,7 +2,7 @@
 // @ts-ignore
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
-import { nextTick, onMounted, type PropType, ref } from 'vue'
+import { computed, nextTick, onMounted, type PropType, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   useDebugChat,
@@ -46,6 +46,7 @@ const {
 const { loading: debugChatLoading, handleDebugChat } = useDebugChat()
 const { loading: stopDebugChatLoading, handleStopDebugChat } = useStopDebugChat()
 const { suggested_questions, handleGenerateSuggestedQuestions } = useGenerateSuggestedQuestions()
+const suggestedAfterAnswerEnabled = computed(() => props.suggested_after_answer?.enable === true)
 
 // 2.定义保存滚动高度函数
 const saveScrollHeight = () => {
@@ -67,6 +68,13 @@ const handleScroll = async (event: UIEvent) => {
   }
 }
 
+const scrollToBottom = async () => {
+  await nextTick()
+  scroller.value?.scrollToBottom?.()
+}
+
+const createLocalMessageId = () => `local-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 // 5.定义输入框提交函数
 const handleSubmit = async () => {
   // 5.1 检测是否录入了query，如果没有则结束
@@ -86,17 +94,20 @@ const handleSubmit = async () => {
   message_id.value = ''
   task_id.value = ''
 
+  const localMessageId = createLocalMessageId()
+
   // 5.4 往消息列表中添加基础人类消息
   messages.value.unshift({
-    id: '',
+    id: localMessageId,
     conversation_id: '',
     query: query.value,
     answer: '',
     total_token_count: 0,
     latency: 0,
     agent_thoughts: [],
-    created_at: 0,
+    created_at: Date.now(),
   })
+  await scrollToBottom()
 
   // 5.5 初始化推理过程数据，并清空输入数据
   let position = 0
@@ -115,8 +126,10 @@ const handleSubmit = async () => {
     if (message_id.value === '' && data?.message_id) {
       task_id.value = data?.task_id
       message_id.value = data?.message_id
-      messages.value[0].id = data?.message_id
+      messages.value[0].id = data?.message_id || localMessageId
       messages.value[0].conversation_id = data?.conversation_id
+    } else if (task_id.value === '' && data?.task_id) {
+      task_id.value = data?.task_id
     }
 
     // 5.9 循环处理得到的事件，记录除ping之外的事件
@@ -170,14 +183,15 @@ const handleSubmit = async () => {
       // 5.16 更新agent_thoughts
       messages.value[0].agent_thoughts = agent_thoughts
 
-      scroller.value.scrollToBottom()
+      scrollToBottom()
     }
   })
 
   // 5.7 判断是否开启建议问题生成，如果开启了则发起api请求获取数据
-  if (props.suggested_after_answer.enable) {
-    await handleGenerateSuggestedQuestions(message_id.value)
-    setTimeout(() => scroller.value && scroller.value.scrollToBottom(), 100)
+  if (suggestedAfterAnswerEnabled.value && message_id.value) {
+    void handleGenerateSuggestedQuestions(message_id.value).then(() => {
+      setTimeout(() => scrollToBottom(), 100)
+    })
   }
 }
 
@@ -197,6 +211,15 @@ const handleSubmitQuestion = async (question: string) => {
 
   // 2.触发handleSubmit函数
   await handleSubmit()
+}
+
+const handleClearDebugConversation = async () => {
+  await handleStop()
+  await handleDeleteDebugConversation(props.app?.id)
+  message_id.value = ''
+  task_id.value = ''
+  suggested_questions.value = []
+  await loadDebugConversationMessages(props.app?.id, true)
 }
 
 // 6.页面DOM加载完毕时初始化数据
@@ -230,7 +253,7 @@ onMounted(async () => {
                 :agent_thoughts="item.agent_thoughts"
                 :answer="item.answer"
                 :app="props.app"
-                :suggested_questions="item.id === message_id ? suggested_questions : []"
+                :suggested_questions="suggestedAfterAnswerEnabled && item.id === message_id ? suggested_questions : []"
                 :loading="item.id === message_id && debugChatLoading"
                 @select-suggested-question="handleSubmitQuestion"
               />
@@ -286,18 +309,7 @@ onMounted(async () => {
           class="flex-shrink-0 !text-gray-700"
           type="text"
           shape="circle"
-          @click="
-            async () => {
-              // 1.先调用停止响应接口
-              await handleStop()
-
-              // 2.调用api接口清空会话
-              await handleDeleteDebugConversation(props.app?.id)
-
-              // 3.重新获取数据
-              await loadDebugConversationMessages(props.app?.id, true)
-            }
-          "
+          @click="handleClearDebugConversation"
         >
           <template #icon>
             <icon-empty :size="16" />

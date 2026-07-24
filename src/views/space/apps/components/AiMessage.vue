@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { type PropType } from 'vue'
+import { computed, type PropType } from 'vue'
 import DotFlashing from '@/components/DotFlashing.vue'
 import AgentThought from './AgentThought.vue'
 
@@ -12,6 +12,30 @@ const props = defineProps({
   suggested_questions: { type: Array as PropType<string[]>, default: [], required: false },
 })
 const emits = defineEmits(['selectSuggestedQuestion'])
+
+const generatedImageUrls = computed(() => {
+  const urls = new Set<string>()
+  const imagePattern = /https?:\/\/[^\s"'<>\])]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s"'<>\])]*)?/gi
+  const collect = (value: unknown) => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(imagePattern)) urls.add(match[0])
+      if (value.trim().startsWith('{') || value.trim().startsWith('[')) {
+        try {
+          collect(JSON.parse(value))
+        } catch {
+          // 工具返回普通文本时只使用正则提取 URL。
+        }
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach(collect)
+    } else if (value && typeof value === 'object') {
+      Object.values(value as Record<string, unknown>).forEach(collect)
+    }
+  }
+  collect(props.answer)
+  props.agent_thoughts.forEach((thought) => collect(thought?.observation))
+  return [...urls]
+})
 </script>
 
 <template>
@@ -32,6 +56,17 @@ const emits = defineEmits(['selectSuggestedQuestion'])
         <template v-else>
           {{ props.answer }}
         </template>
+      </div>
+      <!-- 工具生成图片 -->
+      <div v-if="generatedImageUrls.length > 0" class="flex flex-wrap gap-3 max-w-[680px]">
+        <a-image
+          v-for="imageUrl in generatedImageUrls"
+          :key="imageUrl"
+          :src="imageUrl"
+          width="320"
+          fit="contain"
+          class="rounded-xl overflow-hidden border border-gray-200"
+        />
       </div>
       <!-- 建议问题列表 -->
       <div v-if="props.suggested_questions.length > 0" class="flex flex-col gap-2">

@@ -137,6 +137,22 @@ export const ssePost = async (
       await clearLoginState()
       throw new Error('网络请求失败')
     }
+
+    // Flask 的业务异常统一使用 HTTP 200 返回，因此 SSE 请求还需要检查 JSON 业务码。
+    const contentType = response.headers.get('Content-Type')?.toLowerCase() || ''
+    if (contentType.includes('application/json')) {
+      const json = await response.json()
+      if (json.code === httpCode.unauthorized) {
+        if (allowRefresh && !fetchOptions.skipRefresh && await refreshAccessToken()) {
+          return execute(false)
+        }
+        await clearLoginState()
+        throw new Error(json.message)
+      }
+      if (json.code !== httpCode.success) Message.error(json.message || '网络请求失败')
+      throw new Error(json.message || 'SSE接口返回了非流式响应')
+    }
+
     return await handleStream(response, onData)
   }
 

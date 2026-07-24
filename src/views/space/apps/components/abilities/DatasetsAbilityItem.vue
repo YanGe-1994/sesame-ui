@@ -34,6 +34,8 @@ const originDatasets = ref<Record<string, any>[]>([])
 const retrievalConfigForm = ref<Record<string, any>>({})
 const originRetrievalConfigForm = ref<Record<string, any>>({})
 const isRetrievalConfigInit = ref(false)
+const getDatasetId = (dataset: Record<string, any> | string) =>
+  typeof dataset === 'string' ? dataset : dataset.id
 
 // 2.定义滚动数据分页处理器
 const handleScroll = async (event: UIEvent) => {
@@ -278,7 +280,7 @@ watch(
 
                 // 2.提交草稿配置到接口
                 await handleUpdateDraftAppConfig(props.app_id, {
-                  datasets: newDatasets.map((item) => item.id),
+                  datasets: newDatasets.map((item) => getDatasetId(item)),
                 })
 
                 // 3.更新数据并确保数据完成更新

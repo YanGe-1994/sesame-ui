@@ -12,7 +12,7 @@ const props = defineProps({
   app_id: { type: String, default: '', required: true },
   tools: {
     type: Array as PropType<GetDraftAppConfigResponse['data']['tools']>,
-    default: [],
+    default: () => [],
     required: true,
   },
 })
@@ -41,6 +41,29 @@ const computedBuiltinTools = computed(() => {
   if (toolsActivateCategory.value === 'all') return builtin_tools
   return builtin_tools.filter((item) => item.category === toolsActivateCategory.value)
 })
+const getToolProviderId = (tool: Record<string, any>) => tool.provider?.id ?? tool.provider_id ?? ''
+const getToolName = (tool: Record<string, any>) => tool.tool?.name ?? tool.tool_id ?? ''
+const getToolParams = (tool: Record<string, any>) => tool.tool?.params ?? tool.params ?? {}
+const getToolIcon = (tool: Record<string, any>) => {
+  const icon = tool.provider?.icon ?? ''
+  if (!icon || icon.startsWith('http') || icon.startsWith(apiPrefix)) return icon
+  return `${apiPrefix}${icon.startsWith('/') ? icon : `/${icon}`}`
+}
+const getToolProviderLabel = (tool: Record<string, any>) =>
+  tool.provider?.label ?? tool.provider?.name ?? tool.provider_id ?? '插件'
+const getToolLabel = (tool: Record<string, any>) =>
+  tool.tool?.label ?? tool.tool?.name ?? tool.tool_id ?? '工具'
+const getToolDescription = (tool: Record<string, any>) => tool.tool?.description ?? ''
+const serializeTools = (tools: Record<string, any>[]) => {
+  return tools.map((item) => {
+    return {
+      type: item.type,
+      params: item.tool?.params ?? item.params ?? {},
+      provider_id: getToolProviderId(item),
+      tool_id: getToolName(item),
+    }
+  })
+}
 
 // 2.定义显示工具设置模态窗
 const handleShowToolInfoModal = async (idx: number) => {
@@ -51,7 +74,7 @@ const handleShowToolInfoModal = async (idx: number) => {
 
   // 2.2 检测不同的工具类型调用不同API接口
   if (tool.type === 'builtin_tool') {
-    await loadBuiltinTool(tool.provider.name, tool.tool.name)
+    await loadBuiltinTool(getToolProviderId(tool), getToolName(tool))
     toolInfo.value = {
       type: 'builtin_tool',
       provider: {
@@ -71,7 +94,7 @@ const handleShowToolInfoModal = async (idx: number) => {
       },
     }
   } else {
-    await loadApiTool(tool.provider.id, tool.tool.name)
+    await loadApiTool(getToolProviderId(tool), getToolName(tool))
     toolInfo.value = {
       type: 'api_tool',
       provider: {
@@ -86,14 +109,14 @@ const handleShowToolInfoModal = async (idx: number) => {
         name: api_tool.name,
         label: api_tool.name,
         description: api_tool.description,
-        inputs: builtin_tool.inputs,
+        inputs: api_tool.inputs,
         params: [],
       },
     }
   }
 
   // 2.3 更新工具设置表单，从草稿中获取配置，如果没有则设置默认值
-  const params = tool.tool.params
+  const params = getToolParams(tool)
   toolInfo.value.tool.params.forEach((param: any) => {
     toolInfoSettingForm.value[param.name] = params[param.name] ?? param.default
   })
@@ -105,6 +128,7 @@ const handleShowToolInfoModal = async (idx: number) => {
 // 3.定义关闭工具设置模态窗
 const handleCancelToolInfoModal = () => {
   toolInfoIdx.value = -1
+  toolInfoSettingForm.value = {}
   toolInfoModalVisible.value = false
   toolInfoNavType.value = 'info'
 }
@@ -121,16 +145,16 @@ const handleSubmitToolInfo = async () => {
 
   // 4.3 更新草稿配置
   const newTools = [...props.tools]
-  newTools[toolInfoIdx.value]['tool']['params'] = toolInfoSettingForm.value
+  newTools[toolInfoIdx.value] = {
+    ...newTools[toolInfoIdx.value],
+    params: toolInfoSettingForm.value,
+    tool: {
+      ...(newTools[toolInfoIdx.value].tool ?? {}),
+      params: toolInfoSettingForm.value,
+    },
+  }
   await handleUpdateDraftAppConfig(props.app_id, {
-    tools: newTools.map((item) => {
-      return {
-        type: item.type,
-        params: item['tool']['params'],
-        provider_id: item['provider']['id'],
-        tool_id: item['tool']['name'],
-      }
-    }),
+    tools: serializeTools(newTools),
   })
 
   // 4.4 更新成功触发同步事件
@@ -150,14 +174,7 @@ const handleDeleteTool = async (idx: number) => {
 
   // 5.3 更新提交表单
   await handleUpdateDraftAppConfig(props.app_id, {
-    tools: newTools.map((item) => {
-      return {
-        type: item.type,
-        params: item['tool']['params'],
-        provider_id: item['provider']['id'],
-        tool_id: item['tool']['name'],
-      }
-    }),
+    tools: serializeTools(newTools),
   })
 
   // 5.4 触发时间更新props
@@ -241,22 +258,15 @@ const handleSelectTool = async (provider_idx: number, tool_idx: number) => {
   // 8.3 检测是删除还是新增
   if (
     props.tools.some((item) => {
-      return item.provider.id === selectTool.provider.id && item.tool.name === selectTool.tool.name
+      return getToolProviderId(item) === selectTool.provider.id && getToolName(item) === selectTool.tool.name
     })
   ) {
     // 8.4 删除关联的工具，筛选数据后更新
     const newTools = [...props.tools].filter((item) => {
-      return item.provider.id !== selectTool.provider.id && item.tool.name !== selectTool.tool.name
+      return !(getToolProviderId(item) === selectTool.provider.id && getToolName(item) === selectTool.tool.name)
     })
     await handleUpdateDraftAppConfig(props.app_id, {
-      tools: newTools.map((item) => {
-        return {
-          type: item.type,
-          params: item.tool.params,
-          provider_id: item.provider.id,
-          tool_id: item.tool.name,
-        }
-      }),
+      tools: serializeTools(newTools),
     })
 
     // 8.5 双向更新数据，不关闭模态窗
@@ -273,14 +283,7 @@ const handleSelectTool = async (provider_idx: number, tool_idx: number) => {
     const newTools = [...props.tools]
     newTools.push(selectTool)
     await handleUpdateDraftAppConfig(props.app_id, {
-      tools: newTools.map((item) => {
-        return {
-          type: item.type,
-          params: item.tool.params,
-          provider_id: item.provider.id,
-          tool_id: item.tool.name,
-        }
-      }),
+      tools: serializeTools(newTools),
     })
 
     // 8.8 双向更新数据，不关闭模态窗
@@ -289,9 +292,11 @@ const handleSelectTool = async (provider_idx: number, tool_idx: number) => {
 }
 
 // 9.定义是否关联工具判断函数
-const isToolSelected = (provider, tool) => {
+const isToolSelected = (provider: Record<string, any>, tool: Record<string, any>) => {
+  const providerId = provider.id ?? provider.name ?? ''
+  const toolName = tool.name ?? ''
   return props.tools.some(
-    (item) => item.provider.name === provider.name && item.tool.name === tool.name,
+    (item) => getToolProviderId(item) === providerId && getToolName(item) === toolName,
   )
 }
 </script>
@@ -323,15 +328,15 @@ const isToolSelected = (provider, tool) => {
               :size="36"
               shape="square"
               class="rounded flex-shrink-0"
-              :image-url="tool.provider.icon"
+              :image-url="getToolIcon(tool)"
             />
             <!-- 名称与描述信息 -->
             <div class="flex flex-col gap-1 h-9">
               <div class="text-gray-700 font-bold leading-[18px] line-clamp-1 break-all">
-                {{ tool.provider.label }} / {{ tool.tool.label }}
+                {{ getToolProviderLabel(tool) }} / {{ getToolLabel(tool) }}
               </div>
               <div class="text-gray-500 text-xs line-clamp-1 break-all">
-                {{ tool.tool.description }}
+                {{ getToolDescription(tool) }}
               </div>
             </div>
           </div>
@@ -582,7 +587,7 @@ const isToolSelected = (provider, tool) => {
             <div class="text-lg font-bold text-gray-700">
               {{ toolsActivateType === 'api_tool' ? '自定义插件' : '内置插件' }}
             </div>
-            <a-button size="mini" type="text" class="!text-gray-700 ml-6">
+            <a-button size="mini" type="text" class="!text-gray-700 ml-6" @click="toolsModalVisible = false">
               <template #icon>
                 <icon-close />
               </template>

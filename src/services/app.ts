@@ -2,6 +2,7 @@ import { get, post, ssePost } from '@/utils/request'
 import type {
   CreateAppRequest,
   GetAppResponse,
+  GetAppsWithPageResponse,
   GetDebugConversationMessagesWithPageRequest,
   GetDebugConversationMessagesWithPageResponse,
   GetDraftAppConfigResponse,
@@ -15,9 +16,14 @@ export const getApp = (app_id: string) => {
   return get<GetAppResponse>(`/apps/${app_id}`)
 }
 
+// 获取个人空间应用列表
+export const getAppsWithPage = (req?: BasePaginatorRequest & { search_word?: string }) => {
+  return get<GetAppsWithPageResponse>(`/apps`, { params: req })
+}
+
 // 在个人空间下新增应用
 export const createApp = (req: CreateAppRequest) => {
-  return post<BaseResponse<{ id: string }>>(`/apps`)
+  return post<BaseResponse<{ id: string }>>(`/apps`, { body: req })
 }
 
 // 获取特定应用的草稿配置信息
